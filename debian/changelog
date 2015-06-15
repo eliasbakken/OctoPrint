@@ -1,3 +1,10 @@
+octoprint (1.2.0-rc2-55-g09bfbb1) UNRELEASED; urgency=low
+
+  * New plugin system 
+
+ -- Elias Bakken <elias@iagent.no>  Mon, 15 Jun 2015 18:42:43 -0500
+
+
 octoprint (1.1.2) UNRELEASED; urgency=low
 
   * Initial release. (Closes: #XXXXXX) Initial debian package creation
