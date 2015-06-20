@@ -1,3 +1,10 @@
+octoprint (1.2.0-rc3) UNRELEASED; urgency=low
+
+  * new RC
+
+ -- Elias Bakken <elias@iagent.no>  Sat, 21 Jun 2015 18:42:43 -0500
+
+
 octoprint (1.2.0-rc2-55-g09bfbb1) UNRELEASED; urgency=low
 
   * New plugin system 
