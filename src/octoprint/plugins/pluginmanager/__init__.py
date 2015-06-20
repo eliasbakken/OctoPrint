@@ -133,13 +133,17 @@ class PluginManagerPlugin(octoprint.plugin.SimpleApiPlugin,
 			result.append(self._to_external_representation(plugin))
 
 		if "refresh_repository" in request.values and request.values["refresh_repository"] in valid_boolean_trues:
-			self._refresh_repository()
+			self._repository_available = self._refresh_repository()
 
 		return jsonify(plugins=result, repository=dict(available=self._repository_available, plugins=self._repository_plugins), os=self._get_os(), octoprint=self._get_octoprint_version())
 
 	def on_api_command(self, command, data):
 		if not admin_permission.can():
 			return make_response("Insufficient rights", 403)
+
+		if self._printer.is_printing() or self._printer.is_paused():
+			# do not update while a print job is running
+			return make_response("Printer is currently printing or paused", 409)
 
 		if command == "install":
 			url = data["url"]
@@ -164,10 +168,6 @@ class PluginManagerPlugin(octoprint.plugin.SimpleApiPlugin,
 
 			plugin = self._plugin_manager.plugins[plugin_name]
 			return self.command_toggle(plugin, command)
-
-		elif command == "refresh_repository":
-			self._repository_available = self._refresh_repository()
-			return jsonify(repository=dict(available=self._repository_available, plugins=self._repository_plugins))
 
 	def command_install(self, url=None, path=None, force=False, reinstall=None, dependency_links=False):
 		if url is not None:
@@ -241,12 +241,31 @@ class PluginManagerPlugin(octoprint.plugin.SimpleApiPlugin,
 			package_name = plugin.origin.package_name
 			package_version = plugin.origin.package_version
 			versioned_package = "{package_name}-{package_version}".format(**locals())
+
 			if package_name in installed or versioned_package in installed:
+				# exact match, we are done here
 				new_plugin_key = key
 				new_plugin = plugin
 				break
+
+			else:
+				# it might still be a version that got stripped by python's package resources, e.g. 1.4.5a0 => 1.4.5a
+				found = False
+
+				for inst in installed:
+					if inst.startswith(versioned_package):
+						found = True
+						break
+
+				if found:
+					new_plugin_key = key
+					new_plugin = plugin
+					break
 		else:
-			return make_response("Could not find plugin that was installed", 500)
+			self._logger.warn("The plugin was installed successfully, but couldn't be found afterwards to initialize properly during runtime. Please restart OctoPrint.")
+			result = dict(result=True, url=url, needs_restart=True, needs_refresh=True, was_reinstalled=False, plugin="unknown")
+			self._send_result_notification("install", result)
+			return jsonify(result)
 
 		self._plugin_manager.mark_plugin(new_plugin_key, uninstalled=False)
 		self._plugin_manager.reload_plugins()
@@ -506,7 +525,7 @@ class PluginManagerPlugin(octoprint.plugin.SimpleApiPlugin,
 			)
 
 			if "compatibility" in entry:
-				if "octoprint" in entry["compatibility"]:
+				if "octoprint" in entry["compatibility"] and entry["compatibility"]["octoprint"] is not None and len(entry["compatibility"]["octoprint"]):
 					import semantic_version
 					for octo_compat in entry["compatibility"]["octoprint"]:
 						s = semantic_version.Spec("=={}".format(octo_compat))
@@ -515,7 +534,7 @@ class PluginManagerPlugin(octoprint.plugin.SimpleApiPlugin,
 					else:
 						result["is_compatible"]["octoprint"] = False
 
-				if "os" in entry["compatibility"]:
+				if "os" in entry["compatibility"] and entry["compatibility"]["os"] is not None and len(entry["compatibility"]["os"]):
 					result["is_compatible"]["os"] = current_os in entry["compatibility"]["os"]
 
 			return result

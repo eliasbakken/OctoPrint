@@ -210,8 +210,30 @@ class Server():
 			                                                   set_preprocessors=set_preprocessors)
 			return dict(settings=plugin_settings)
 
+		def settings_plugin_config_migration(name, implementation):
+			if not isinstance(implementation, octoprint.plugin.SettingsPlugin):
+				return
+
+			settings_version = implementation.get_settings_version()
+			settings_migrator = implementation.on_settings_migrate
+
+			if settings_version is not None and settings_migrator is not None:
+				stored_version = implementation._settings.get_int(["_config_version"])
+				if stored_version is None or stored_version < settings_version:
+					settings_migrator(settings_version, stored_version)
+					implementation._settings.set_int(["_config_version"], settings_version)
+					implementation._settings.save()
+
+			implementation.on_settings_initialized()
+
 		pluginManager.implementation_inject_factories=[octoprint_plugin_inject_factory, settings_plugin_inject_factory]
 		pluginManager.initialize_implementations()
+
+		settingsPlugins = pluginManager.get_implementations(octoprint.plugin.SettingsPlugin)
+		for implementation in settingsPlugins:
+			settings_plugin_config_migration(implementation._identifier, implementation)
+
+		pluginManager.implementation_post_inits=[settings_plugin_config_migration]
 
 		pluginManager.log_all_plugins()
 
@@ -674,6 +696,20 @@ class Server():
 
 		base_folder = settings().getBaseFolder("generated")
 
+		# clean the folder
+		if settings().getBoolean(["devel", "webassets", "clean_on_startup"]):
+			import shutil
+			for entry in ("webassets", ".webassets-cache"):
+				path = os.path.join(base_folder, entry)
+				self._logger.debug("Deleting {path}...".format(**locals()))
+				if os.path.isdir(path):
+					shutil.rmtree(path, ignore_errors=True)
+				elif os.path.isfile(path):
+					try:
+						os.remove(path)
+					except:
+						self._logger.exception("Exception while trying to delete {entry} from {base_folder}".format(**locals()))
+
 		AdjustedEnvironment = type(Environment)(Environment.__name__, (Environment,), dict(
 			resolver_class=util.flask.PluginAssetResolver
 		))
@@ -754,17 +790,7 @@ class Server():
 		if len(less_app) == 0:
 			less_app = ["empty"]
 
-		js_libs_bundle = Bundle(*js_libs, output="webassets/packed_libs.js")
-		if settings().getBoolean(["devel", "webassets", "minify"]):
-			js_app_bundle = Bundle(*js_app, output="webassets/package_app.js", filters="rjsmin")
-		else:
-			js_app_bundle = Bundle(*js_app, output="webassets/package_app.js")
-		all_js_bundle = Bundle(js_libs_bundle, js_app_bundle, output="webassets/packed.js")
-
-		css_libs_bundle = Bundle(*css_libs, output="webassets/packed_libs.css")
-		css_app_bundle = Bundle(*css_app, output="webassets/packed_app.css")
-
-		from webassets.filter import register_filter
+		from webassets.filter import register_filter, Filter
 		from webassets.filter.cssrewrite.base import PatternRewriter
 		import re
 		class LessImportRewrite(PatternRewriter):
@@ -783,13 +809,31 @@ class Server():
 
 				return "{import_with_options}\"{import_url}\";".format(**locals())
 
+		class JsDelimiterBundle(Filter):
+			name = "js_delimiter_bundler"
+			options = {}
+			def input(self, _in, out, **kwargs):
+				out.write(_in.read())
+				out.write("\n;\n")
+
 		register_filter(LessImportRewrite)
+		register_filter(JsDelimiterBundle)
 
-		all_css_bundle = Bundle(css_libs_bundle, css_app_bundle, output="webassets/packed.css")
-		all_less_bundle = Bundle(*less_app, output="webassets/packed.less", filters="less_importrewrite")
+		js_libs_bundle = Bundle(*js_libs, output="webassets/packed_libs.js", filters="js_delimiter_bundler")
+		if settings().getBoolean(["devel", "webassets", "minify"]):
+			js_app_bundle = Bundle(*js_app, output="webassets/packed_app.js", filters="rjsmin, js_delimiter_bundler")
+		else:
+			js_app_bundle = Bundle(*js_app, output="webassets/packed_app.js", filters="js_delimiter_bundler")
 
-		assets.register("all_js", all_js_bundle)
-		assets.register("all_css", all_css_bundle)
+		css_libs_bundle = Bundle(*css_libs, output="webassets/packed_libs.css")
+		css_app_bundle = Bundle(*css_app, output="webassets/packed_app.css")
+
+		all_less_bundle = Bundle(*less_app, output="webassets/packed_app.less", filters="less_importrewrite")
+
+		assets.register("js_libs", js_libs_bundle)
+		assets.register("js_app", js_app_bundle)
+		assets.register("css_libs", css_libs_bundle)
+		assets.register("css_app", css_app_bundle)
 		assets.register("less_app", all_less_bundle)
 
 
