@@ -142,7 +142,8 @@ default_settings = {
 		"repetierTargetTemp": False,
 		"externalHeatupDetection": True,
 		"supportWait": True,
-		"keyboardControl": True
+		"keyboardControl": True,
+		"pollWatched": False
 	},
 	"folder": {
 		"uploads": None,
@@ -156,7 +157,8 @@ default_settings = {
 		"printerProfiles": None,
 		"scripts": None,
 		"translations": None,
-		"generated": None
+		"generated": None,
+		"data": None
 	},
 	"temperature": {
 		"profiles": [

@@ -529,7 +529,7 @@ class MachineCom(object):
 
 				self.sendCommand("M24")
 
-				self._sd_status_timer = RepeatedTimer(lambda: get_interval("sdStatus"), self._poll_sd_status, run_first=True)
+				self._sd_status_timer = RepeatedTimer(lambda: get_interval("sdStatus", default_value=1.0), self._poll_sd_status, run_first=True)
 				self._sd_status_timer.start()
 			else:
 				line = self._getNext()
@@ -1181,7 +1181,7 @@ class MachineCom(object):
 
 	def _onConnected(self):
 		self._serial.timeout = settings().getFloat(["serial", "timeout", "communication"])
-		self._temperature_timer = RepeatedTimer(lambda: get_interval("temperature"), self._poll_temperature, run_first=True)
+		self._temperature_timer = RepeatedTimer(lambda: get_interval("temperature", default_value=4.0), self._poll_temperature, run_first=True)
 		self._temperature_timer.start()
 
 		self._changeState(self.STATE_OPERATIONAL)
@@ -1241,10 +1241,10 @@ class MachineCom(object):
 				self._changeState(self.STATE_DETECT_SERIAL)
 				serial_obj = self._detectPort(True)
 				if serial_obj is None:
-					self._log("Failed to autodetect serial port")
-					self._errorValue = 'Failed to autodetect serial port.'
+					self._errorValue = 'Failed to autodetect serial port, please set it manually.'
 					self._changeState(self.STATE_ERROR)
 					eventManager().fire(Events.ERROR, {"error": self.getErrorString()})
+					self._log("Failed to autodetect serial port, please set it manually.")
 					return None
 
 				port = serial_obj.port
@@ -1266,11 +1266,17 @@ class MachineCom(object):
 		for name, factory in serial_factories:
 			try:
 				serial_obj = factory(self, self._port, self._baudrate, settings().getFloat(["serial", "timeout", "connection"]))
-			except Exception:
-				self._log("Unexpected error while connecting to serial port: %s %s (hook %s)" % (self._port, get_exception_string(), name))
-				self._errorValue = "Failed to open serial port, permissions correct?"
+			except:
+				exception_string = get_exception_string()
+				self._errorValue = "Connection error, see Terminal tab"
 				self._changeState(self.STATE_ERROR)
 				eventManager().fire(Events.ERROR, {"error": self.getErrorString()})
+
+				self._log("Unexpected error while connecting to serial port: %s %s (hook %s)" % (self._port, exception_string, name))
+
+				if "failed to set custom baud rate" in exception_string.lower():
+					self._log("Your installation does not support custom baudrates (e.g. 250000) for connecting to your printer. This is a problem of the pyserial library that OctoPrint depends on. Please update to a pyserial version that supports your baudrate or switch your printer's firmware to a standard baudrate (e.g. 115200). See https://github.com/foosel/OctoPrint/wiki/OctoPrint-support-for-250000-baud-rate-on-Raspbian")
+
 				return False
 
 			if serial_obj is not None:
@@ -1292,9 +1298,13 @@ class MachineCom(object):
 			if self._regex_minMaxError.match(line):
 				line = line.rstrip() + self._readline()
 
-			#Skip the communication errors, as those get corrected.
 			if 'line number' in line.lower() or 'checksum' in line.lower() or 'expected line' in line.lower():
+				#Skip the communication errors, as those get corrected.
 				self._lastCommError = line[6:] if line.startswith("Error:") else line[2:]
+				pass
+			elif 'volume.init' in line.lower() or "openroot" in line.lower() or 'workdir' in line.lower()\
+					or "error writing to file" in line.lower():
+				#Also skip errors with the SD card
 				pass
 			elif not self.isError():
 				self._errorValue = line[6:] if line.startswith("Error:") else line[2:]
@@ -1628,11 +1638,13 @@ class MachineCom(object):
 			try:
 				self._serial.write(cmd + '\n')
 			except:
-				self._log("Unexpected error while writing serial port: %s" % (get_exception_string()))
+				self._logger.exception("Unexpected error while writing to serial port")
+				self._log("Unexpected error while writing to serial port: %s" % (get_exception_string()))
 				self._errorValue = get_exception_string()
 				self.close(True)
 		except:
-			self._log("Unexpected error while writing serial port: %s" % (get_exception_string()))
+			self._logger.exception("Unexpected error while writing to serial port")
+			self._log("Unexpected error while writing to serial port: %s" % (get_exception_string()))
 			self._errorValue = get_exception_string()
 			self.close(True)
 
@@ -1976,9 +1988,9 @@ class TypedQueue(queue.Queue):
 		return item
 
 
-class TypeAlreadyInQueue(BaseException):
+class TypeAlreadyInQueue(Exception):
 	def __init__(self, t, *args, **kwargs):
-		BaseException.__init__(self, *args, **kwargs)
+		Exception.__init__(self, *args, **kwargs)
 		self.type = t
 
 
@@ -1987,11 +1999,15 @@ def get_new_timeout(type):
 	return now + get_interval(type)
 
 
-def get_interval(type):
+def get_interval(type, default_value=0.0):
 	if type not in default_settings["serial"]["timeout"]:
-		return 0
+		return default_value
 	else:
-		return settings().getFloat(["serial", "timeout", type])
+		value = settings().getFloat(["serial", "timeout", type])
+		if not value:
+			return default_value
+		else:
+			return value
 
 _temp_command_regex = re.compile("^M(?P<command>104|109|140|190)(\s+T(?P<tool>\d+)|\s+S(?P<temperature>[-+]?\d*\.?\d*))+")
 

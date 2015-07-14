@@ -14,12 +14,14 @@ from flask.ext.babel import Babel, gettext, ngettext
 from flask.ext.assets import Environment, Bundle
 from babel import Locale
 from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 from collections import defaultdict
 
 import os
 import logging
 import logging.config
 import atexit
+import signal
 
 SUCCESS = {}
 NO_CONTENT = ("", 204)
@@ -196,7 +198,8 @@ class Server():
 				file_manager=fileManager,
 				printer=printer,
 				app_session_manager=appSessionManager,
-				plugin_lifecycle_manager=pluginLifecycleManager
+				plugin_lifecycle_manager=pluginLifecycleManager,
+				data_folder=os.path.join(settings().getBaseFolder("data"), name)
 			)
 
 		def settings_plugin_inject_factory(name, implementation):
@@ -397,7 +400,12 @@ class Server():
 				printer.connect(port=port, baudrate=baudrate, profile=printer_profile["id"] if "id" in printer_profile else "_default")
 
 		# start up watchdogs
-		observer = Observer()
+		if s.getBoolean(["feature", "pollWatched"]):
+			# use less performant polling observer if explicitely configured
+			observer = PollingObserver()
+		else:
+			# use os default
+			observer = Observer()
 		observer.schedule(util.watchdog.GcodeWatchdogHandler(fileManager, printer), s.getBaseFolder("watched"))
 		observer.start()
 
@@ -439,16 +447,27 @@ class Server():
 
 		# prepare our shutdown function
 		def on_shutdown():
-			self._logger.info("Goodbye!")
+			# will be called on clean system exit and shutdown the watchdog observer and call the on_shutdown methods
+			# on all registered ShutdownPlugins
+			self._logger.info("Shutting down...")
 			observer.stop()
 			observer.join()
 			octoprint.plugin.call_plugin(octoprint.plugin.ShutdownPlugin,
 			                             "on_shutdown")
+			self._logger.info("Goodbye!")
 		atexit.register(on_shutdown)
 
+		def sigterm_handler(*args, **kwargs):
+			# will stop tornado on SIGTERM, making the program exit cleanly
+			def shutdown_tornado():
+				ioloop.stop()
+			ioloop.add_callback_from_signal(shutdown_tornado)
+		signal.signal(signal.SIGTERM, sigterm_handler)
+
 		try:
+			# this is the main loop - as long as tornado is running, OctoPrint is running
 			ioloop.start()
-		except KeyboardInterrupt:
+		except (KeyboardInterrupt, SystemExit):
 			pass
 		except:
 			self._logger.fatal("Now that is embarrassing... Something really really went wrong here. Please report this including the stacktrace below in OctoPrint's bugtracker. Thanks!")
@@ -525,6 +544,9 @@ class Server():
 				},
 				"tornado.general": {
 					"level": "INFO"
+				},
+				"octoprint.server.util.flask": {
+					"level": "WARN"
 				}
 			},
 			"root": {
@@ -693,6 +715,7 @@ class Server():
 		global pluginManager
 
 		util.flask.fix_webassets_cache()
+		util.flask.fix_webassets_filtertool()
 
 		base_folder = settings().getBaseFolder("generated")
 
@@ -826,9 +849,9 @@ class Server():
 			js_app_bundle = Bundle(*js_app, output="webassets/packed_app.js", filters="js_delimiter_bundler")
 
 		css_libs_bundle = Bundle(*css_libs, output="webassets/packed_libs.css")
-		css_app_bundle = Bundle(*css_app, output="webassets/packed_app.css")
+		css_app_bundle = Bundle(*css_app, output="webassets/packed_app.css", filters="cssrewrite")
 
-		all_less_bundle = Bundle(*less_app, output="webassets/packed_app.less", filters="less_importrewrite")
+		all_less_bundle = Bundle(*less_app, output="webassets/packed_app.less", filters="cssrewrite, less_importrewrite")
 
 		assets.register("js_libs", js_libs_bundle)
 		assets.register("js_app", js_app_bundle)
