@@ -5,7 +5,7 @@ PYTHON=`which python`
 DESTDIR=/
 BUILDIR=$(CURDIR)/debian/octoprint
 PROJECT=myprojectname
-VERSION=1.1.2
+VERSION=1.2.8
 
 all:
 	@echo "make source - Create source package"
