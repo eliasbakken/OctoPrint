@@ -12,17 +12,24 @@ from flask import request, g, url_for, make_response, render_template, send_from
 
 import octoprint.plugin
 
-from octoprint.server import app, userManager, pluginManager, gettext, debug, LOCALES, VERSION, DISPLAY_VERSION, UI_API_KEY
+from octoprint.server import app, userManager, pluginManager, gettext, \
+	debug, LOCALES, VERSION, DISPLAY_VERSION, UI_API_KEY, BRANCH
 from octoprint.settings import settings
+
+import re
 
 from . import util
 
 import logging
 _logger = logging.getLogger(__name__)
 
+_valid_id_re = re.compile("[a-z_]+")
+_valid_div_re = re.compile("[a-zA-Z_-]+")
+
 @app.route("/")
-@util.flask.cached(refreshif=lambda: util.flask.cache_check_headers() or "_refresh" in request.values,
-                   key=lambda: "view/%s/%s" % (request.path, g.locale),
+@util.flask.cached(timeout=-1,
+                   refreshif=lambda: util.flask.cache_check_headers() or "_refresh" in request.values,
+                   key=lambda: "view:{}:{}".format(request.base_url, g.locale),
                    unless_response=util.flask.cache_check_response_headers)
 def index():
 
@@ -150,6 +157,7 @@ def index():
 		folders=(gettext("Folders"), dict(template="dialogs/settings/folders.jinja2", _div="settings_folders", custom_bindings=False)),
 		appearance=(gettext("Appearance"), dict(template="dialogs/settings/appearance.jinja2", _div="settings_appearance", custom_bindings=False)),
 		logs=(gettext("Logs"), dict(template="dialogs/settings/logs.jinja2", _div="settings_logs")),
+		server=(gettext("Server"), dict(template="dialogs/settings/server.jinja2", _div="settings_server", custom_bindings=False)),
 	)
 	if enable_accesscontrol:
 		templates["settings"]["entries"]["accesscontrol"] = (gettext("Access Control"), dict(template="dialogs/settings/accesscontrol.jinja2", _div="settings_users", custom_bindings=False))
@@ -229,9 +237,30 @@ def index():
 		# finally add anything that's not included in our order yet
 		sorted_missing = list(missing_in_order)
 		if template_sorting[t]["key"] is not None:
-			# anything but navbar and generic components get sorted by their name
-			if template_sorting[t]["key"] == "name":
-				sorted_missing = sorted(missing_in_order, key=lambda x: templates[t]["entries"][x][0])
+			# default extractor: works with entries that are dicts and entries that are 2-tuples with the
+			# entry data at index 1
+			def extractor(item, key):
+				if isinstance(item, dict) and key in item:
+					return item[key]
+				elif isinstance(item, tuple) and len(item) > 1 and isinstance(item[1], dict) and key in item[1]:
+					return item[1][key]
+
+				return None
+
+			# if template type provides custom extractor, make sure its exceptions are handled
+			if "key_extractor" in template_sorting[t] and callable(template_sorting[t]["key_extractor"]):
+				def create_safe_extractor(extractor):
+					def f(x, k):
+						try:
+							return extractor(x, k)
+						except:
+							_logger.exception("Error while extracting sorting keys for template {}".format(t))
+							return None
+					return f
+				extractor = create_safe_extractor(template_sorting[t]["key_extractor"])
+
+			sort_key = template_sorting[t]["key"]
+			sorted_missing = sorted(missing_in_order, key=lambda x: extractor(templates[t]["entries"][x], sort_key))
 
 		if template_sorting[t]["add"] == "prepend":
 			templates[t]["order"] = sorted_missing + templates[t]["order"]
@@ -256,6 +285,7 @@ def index():
 		debug=debug,
 		version=VERSION,
 		display_version=DISPLAY_VERSION,
+		branch=BRANCH,
 		gcodeMobileThreshold=settings().get(["gcodeViewer", "mobileSizeThreshold"]),
 		gcodeThreshold=settings().get(["gcodeViewer", "sizeThreshold"]),
 		uiApiKey=UI_API_KEY,
@@ -276,9 +306,7 @@ def index():
 	response.headers["Last-Modified"] = datetime.datetime.now()
 
 	if first_run:
-		response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, post-check=0, pre-check=0, max-age=0"
-		response.headers["Pragma"] = "no-cache"
-		response.headers["Expires"] = "-1"
+		response = util.flask.add_non_caching_response_headers(response)
 
 	return response
 
@@ -319,6 +347,8 @@ def _process_template_configs(name, implementation, configs, rules):
 					app.jinja_env.get_or_select_template(data["template"])
 				except TemplateNotFound:
 					pass
+				except:
+					_logger.exception("Error in template {}, not going to include it".format(data["template"]))
 				else:
 					includes[template_type].append(rule["to_entry"](data))
 
@@ -343,6 +373,9 @@ def _process_template_config(name, implementation, rule, config=None, counter=1)
 		data["_div"] = rule["div"](name)
 		if "suffix" in data:
 			data["_div"] = data["_div"] + data["suffix"]
+		if not _valid_div_re.match(data["_div"]):
+			_logger.warn("Template config {} contains invalid div identifier {}, skipping it".format(name, data["_div"]))
+			return None
 
 	if not "template" in data:
 		data["template"] = rule["template"](name)
@@ -354,6 +387,7 @@ def _process_template_config(name, implementation, rule, config=None, counter=1)
 		data_bind = "allowBindings: true"
 		if "data_bind" in data:
 			data_bind = data_bind + ", " + data["data_bind"]
+		data_bind = data_bind.replace("\"", "\\\"")
 		data["data_bind"] = data_bind
 
 	data["_key"] = "plugin_" + name
@@ -368,7 +402,9 @@ def robotsTxt():
 
 
 @app.route("/i18n/<string:locale>/<string:domain>.js")
-@util.flask.cached(refreshif=lambda: util.flask.cache_check_headers() or "_refresh" in request.values, key=lambda: "view/%s/%s" % (request.path, g.locale))
+@util.flask.cached(timeout=-1,
+                   refreshif=lambda: util.flask.cache_check_headers() or "_refresh" in request.values,
+                   key=lambda: "view:{}:{}".format(request.base_url, g.locale))
 def localeJs(locale, domain):
 	messages = dict()
 	plural_expr = None

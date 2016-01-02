@@ -122,6 +122,7 @@ function DataUpdater(allViewModels) {
                     var oldVersion = VERSION;
                     VERSION = data["version"];
                     DISPLAY_VERSION = data["display_version"];
+                    BRANCH = data["branch"];
                     $("span.version").text(DISPLAY_VERSION);
 
                     var oldPluginHash = self._pluginHash;
@@ -176,6 +177,7 @@ function DataUpdater(allViewModels) {
                     var type = data["type"];
                     var payload = data["payload"];
                     var html = "";
+                    var format = {};
 
                     log.debug("Got event " + type + " with payload: " + JSON.stringify(payload));
 
@@ -186,7 +188,31 @@ function DataUpdater(allViewModels) {
                     } else if (type == "MovieFailed") {
                         html = "<p>" + _.sprintf(gettext("Rendering of timelapse %(movie_basename)s failed with return code %(returncode)s"), payload) + "</p>";
                         html += pnotifyAdditionalInfo('<pre style="overflow: auto">' + payload.error + '</pre>');
-                        new PNotify({title: gettext("Rendering failed"), text: html, type: "error", hide: false});
+                        new PNotify({
+                            title: gettext("Rendering failed"),
+                            text: html,
+                            type: "error",
+                            hide: false
+                        });
+                    } else if (type == "PostRollStart") {
+                        var title = gettext("Capturing timelapse postroll");
+
+                        var text;
+                        if (!payload.postroll_duration) {
+                            text = _.sprintf(gettext("Now capturing timelapse post roll, this will take only a moment..."), format);
+                        } else {
+                            if (payload.postroll_duration > 60) {
+                                format = {duration: _.sprintf(gettext("%(minutes)d min"), {minutes: payload.postroll_duration / 60})};
+                            } else {
+                                format = {duration: _.sprintf(gettext("%(seconds)d sec"), {seconds: payload.postroll_duration})};
+                            }
+                            text = _.sprintf(gettext("Now capturing timelapse post roll, this will take approximately %(duration)s..."), format);
+                        }
+
+                        new PNotify({
+                            title: title,
+                            text: text
+                        });
                     } else if (type == "SlicingStarted") {
                         gcodeUploadProgress.addClass("progress-striped").addClass("active");
                         gcodeUploadProgressBar.css("width", "100%");
@@ -224,7 +250,6 @@ function DataUpdater(allViewModels) {
                             text: _.sprintf(gettext("Streamed %(local)s to %(remote)s on SD, took %(time).2f seconds"), payload),
                             type: "success"
                         });
-                        gcodeFilesViewModel.requestData(payload.remote, "sdcard");
                     }
 
                     var legacyEventHandlers = {

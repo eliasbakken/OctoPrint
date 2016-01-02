@@ -81,7 +81,7 @@ def on_identity_loaded(sender, identity):
 	if user is None:
 		return
 
-	identity.provides.add(UserNeed(user.get_name()))
+	identity.provides.add(UserNeed(user.get_id()))
 	if user.is_user():
 		identity.provides.add(RoleNeed("user"))
 	if user.is_admin():
@@ -98,9 +98,9 @@ def load_user(id):
 
 	if userManager is not None:
 		if sessionid:
-			return userManager.findUser(username=id, session=sessionid)
+			return userManager.findUser(userid=id, session=sessionid)
 		else:
-			return userManager.findUser(username=id)
+			return userManager.findUser(userid=id)
 	return users.DummyUser()
 
 
@@ -213,7 +213,7 @@ class Server():
 			                                                   set_preprocessors=set_preprocessors)
 			return dict(settings=plugin_settings)
 
-		def settings_plugin_config_migration(name, implementation):
+		def settings_plugin_config_migration_and_cleanup(name, implementation):
 			if not isinstance(implementation, octoprint.plugin.SettingsPlugin):
 				return
 
@@ -221,11 +221,13 @@ class Server():
 			settings_migrator = implementation.on_settings_migrate
 
 			if settings_version is not None and settings_migrator is not None:
-				stored_version = implementation._settings.get_int(["_config_version"])
+				stored_version = implementation._settings.get_int([octoprint.plugin.SettingsPlugin.config_version_key])
 				if stored_version is None or stored_version < settings_version:
 					settings_migrator(settings_version, stored_version)
-					implementation._settings.set_int(["_config_version"], settings_version)
-					implementation._settings.save()
+					implementation._settings.set_int([octoprint.plugin.SettingsPlugin.config_version_key], settings_version)
+
+			implementation.on_settings_cleanup()
+			implementation._settings.save()
 
 			implementation.on_settings_initialized()
 
@@ -235,11 +237,11 @@ class Server():
 		settingsPlugins = pluginManager.get_implementations(octoprint.plugin.SettingsPlugin)
 		for implementation in settingsPlugins:
 			try:
-				settings_plugin_config_migration(implementation._identifier, implementation)
+				settings_plugin_config_migration_and_cleanup(implementation._identifier, implementation)
 			except:
 				self._logger.exception("Error while trying to migrate settings for plugin {}, ignoring it".format(implementation._identifier))
 
-		pluginManager.implementation_post_inits=[settings_plugin_config_migration]
+		pluginManager.implementation_post_inits=[settings_plugin_config_migration_and_cleanup]
 
 		pluginManager.log_all_plugins()
 
@@ -330,13 +332,34 @@ class Server():
 
 		upload_suffixes = dict(name=s.get(["server", "uploads", "nameSuffix"]), path=s.get(["server", "uploads", "pathSuffix"]))
 
+		def mime_type_guesser(path):
+			from octoprint.filemanager import get_mime_type
+			return get_mime_type(path)
+
+		download_handler_kwargs = dict(
+			as_attachment=True,
+			allow_client_caching=False
+		)
+		additional_mime_types=dict(mime_type_guesser=mime_type_guesser)
+		admin_validator = dict(access_validation=util.tornado.access_validation_factory(app, loginManager, util.flask.user_validator))
+		no_hidden_files_validator = dict(path_validation=util.tornado.path_validation_factory(lambda path: not octoprint.util.is_hidden_path(path), status_code=404))
+
+		def joined_dict(*dicts):
+			if not len(dicts):
+				return dict()
+
+			joined = dict()
+			for d in dicts:
+				joined.update(d)
+			return joined
+
 		server_routes = self._router.urls + [
 			# various downloads
-			(r"/downloads/timelapse/([^/]*\.mpg)", util.tornado.LargeResponseHandler, dict(path=s.getBaseFolder("timelapse"), as_attachment=True)),
-			(r"/downloads/files/local/(.*)", util.tornado.LargeResponseHandler, dict(path=s.getBaseFolder("uploads"), as_attachment=True, path_validation=util.tornado.path_validation_factory(lambda path: not os.path.basename(path).startswith("."), status_code=404))),
-			(r"/downloads/logs/([^/]*)", util.tornado.LargeResponseHandler, dict(path=s.getBaseFolder("logs"), as_attachment=True, access_validation=util.tornado.access_validation_factory(app, loginManager, util.flask.admin_validator))),
+			(r"/downloads/timelapse/([^/]*\.mpg)", util.tornado.LargeResponseHandler, joined_dict(dict(path=s.getBaseFolder("timelapse")), download_handler_kwargs, no_hidden_files_validator)),
+			(r"/downloads/files/local/(.*)", util.tornado.LargeResponseHandler, joined_dict(dict(path=s.getBaseFolder("uploads")), download_handler_kwargs, no_hidden_files_validator, additional_mime_types)),
+			(r"/downloads/logs/([^/]*)", util.tornado.LargeResponseHandler, joined_dict(dict(path=s.getBaseFolder("logs")), download_handler_kwargs, admin_validator)),
 			# camera snapshot
-			(r"/downloads/camera/current", util.tornado.UrlForwardHandler, dict(url=s.get(["webcam", "snapshot"]), as_attachment=True, access_validation=util.tornado.access_validation_factory(app, loginManager, util.flask.user_validator))),
+			(r"/downloads/camera/current", util.tornado.UrlProxyHandler, dict(url=s.get(["webcam", "snapshot"]), as_attachment=True, access_validation=util.tornado.access_validation_factory(app, loginManager, util.flask.user_validator))),
 			# generated webassets
 			(r"/static/webassets/(.*)", util.tornado.LargeResponseHandler, dict(path=os.path.join(s.getBaseFolder("generated"), "webassets")))
 		]
@@ -626,7 +649,9 @@ class Server():
 
 		# configure additional template folders for jinja2
 		import jinja2
-		filesystem_loader = jinja2.FileSystemLoader([])
+		import octoprint.util.jinja
+		filesystem_loader = octoprint.util.jinja.FilteredFileSystemLoader([],
+		                                                                  path_filter=lambda x: not octoprint.util.is_hidden_path(x))
 		filesystem_loader.searchpath = self._template_searchpaths
 
 		jinja_loader = jinja2.ChoiceLoader([
@@ -736,16 +761,58 @@ class Server():
 		# clean the folder
 		if settings().getBoolean(["devel", "webassets", "clean_on_startup"]):
 			import shutil
+			import errno
+			import sys
+
 			for entry in ("webassets", ".webassets-cache"):
 				path = os.path.join(base_folder, entry)
-				self._logger.debug("Deleting {path}...".format(**locals()))
+
+				# delete path if it exists
 				if os.path.isdir(path):
-					shutil.rmtree(path, ignore_errors=True)
-				elif os.path.isfile(path):
 					try:
-						os.remove(path)
+						self._logger.debug("Deleting {path}...".format(**locals()))
+						shutil.rmtree(path)
 					except:
-						self._logger.exception("Exception while trying to delete {entry} from {base_folder}".format(**locals()))
+						self._logger.exception("Error while trying to delete {path}, leaving it alone".format(**locals()))
+						continue
+
+				# re-create path
+				self._logger.debug("Creating {path}...".format(**locals()))
+				error_text = "Error while trying to re-create {path}, that might cause errors with the webassets cache".format(**locals())
+				try:
+					os.makedirs(path)
+				except OSError as e:
+					if e.errno == errno.EACCES:
+						# that might be caused by the user still having the folder open somewhere, let's try again after
+						# waiting a bit
+						import time
+						for n in xrange(3):
+							time.sleep(0.5)
+							self._logger.debug("Creating {path}: Retry #{retry} after {time}s".format(path=path, retry=n+1, time=(n + 1)*0.5))
+							try:
+								os.makedirs(path)
+								break
+							except:
+								if self._logger.isEnabledFor(logging.DEBUG):
+									self._logger.exception("Ignored error while creating directory {path}".format(**locals()))
+								pass
+						else:
+							# this will only get executed if we never did
+							# successfully execute makedirs above
+							self._logger.exception(error_text)
+							continue
+					else:
+						# not an access error, so something we don't understand
+						# went wrong -> log an error and stop
+						self._logger.exception(error_text)
+						continue
+				except:
+					# not an OSError, so something we don't understand
+					# went wrong -> log an error and stop
+					self._logger.exception(error_text)
+					continue
+
+				self._logger.info("Reset webasset folder {path}...".format(**locals()))
 
 		AdjustedEnvironment = type(Environment)(Environment.__name__, (Environment,), dict(
 			resolver_class=util.flask.PluginAssetResolver
@@ -764,12 +831,10 @@ class Server():
 		assets.updater = UpdaterType
 
 		enable_gcodeviewer = settings().getBoolean(["gcodeViewer", "enabled"])
-		enable_timelapse = (settings().get(["webcam", "snapshot"]) and settings().get(["webcam", "ffmpeg"]))
 		preferred_stylesheet = settings().get(["devel", "stylesheet"])
 
 		dynamic_assets = util.flask.collect_plugin_assets(
 			enable_gcodeviewer=enable_gcodeviewer,
-			enable_timelapse=enable_timelapse,
 			preferred_stylesheet=preferred_stylesheet
 		)
 

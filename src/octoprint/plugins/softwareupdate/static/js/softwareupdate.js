@@ -13,11 +13,21 @@ $(function() {
 
         self.currentlyBeingUpdated = [];
 
-        self.config_restartCommand = ko.observable();
-        self.config_rebootCommand = ko.observable();
+        self.octoprintUnconfigured = ko.observable();
+        self.octoprintUnreleased = ko.observable();
+
         self.config_cacheTtl = ko.observable();
+        self.config_checkoutFolder = ko.observable();
+        self.config_checkType = ko.observable();
 
         self.configurationDialog = $("#settings_plugin_softwareupdate_configurationdialog");
+
+        self.config_availableCheckTypes = [
+            {"key": "github_release", "name": gettext("Release")},
+            {"key": "git_commit", "name": gettext("Commit")}
+        ];
+
+        self.reloadOverlay = $("#reloadui_overlay");
 
         self.versions = new ItemListHelper(
             "plugin.softwareupdate.versions",
@@ -78,19 +88,23 @@ $(function() {
             var data = {
                 plugins: {
                     softwareupdate: {
-                        octoprint_restart_command: self.config_restartCommand(),
-                        environment_restart_command: self.config_rebootCommand(),
-                        cache_ttl: parseInt(self.config_cacheTtl())
+                        cache_ttl: parseInt(self.config_cacheTtl()),
+                        octoprint_checkout_folder: self.config_checkoutFolder(),
+                        octoprint_type: self.config_checkType()
                     }
                 }
             };
-            self.settings.saveData(data, function() { self.configurationDialog.modal("hide"); self._copyConfig(); });
+            self.settings.saveData(data, function() {
+                self.configurationDialog.modal("hide");
+                self._copyConfig();
+                self.performCheck();
+            });
         };
 
         self._copyConfig = function() {
-            self.config_restartCommand(self.settings.settings.plugins.softwareupdate.octoprint_restart_command());
-            self.config_rebootCommand(self.settings.settings.plugins.softwareupdate.environment_restart_command());
             self.config_cacheTtl(self.settings.settings.plugins.softwareupdate.cache_ttl());
+            self.config_checkoutFolder(self.settings.settings.plugins.softwareupdate.octoprint_checkout_folder());
+            self.config_checkType(self.settings.settings.plugins.softwareupdate.octoprint_type());
         };
 
         self.fromCheckResponse = function(data, ignoreSeen, showIfNothingNew) {
@@ -108,6 +122,25 @@ $(function() {
                 versions.push(value);
             });
             self.versions.updateItems(versions);
+
+            var octoprint = data.information["octoprint"];
+            if (octoprint && octoprint.hasOwnProperty("check")) {
+                var check = octoprint.check;
+                if (BRANCH != "master" && check["type"] == "github_release") {
+                    self.octoprintUnreleased(true);
+                } else {
+                    self.octoprintUnreleased(false);
+                }
+
+                var checkoutFolder = (check["checkout_folder"] || "").trim();
+                var updateFolder = (check["update_folder"] || "").trim();
+                var checkType = check["type"] || "";
+                if ((checkType == "github_release" || checkType == "git_commit") && checkoutFolder == "" && updateFolder == "") {
+                    self.octoprintUnconfigured(true);
+                } else {
+                    self.octoprintUnconfigured(false);
+                }
+            }
 
             if (data.status == "updateAvailable" || data.status == "updatePossible") {
                 var text = gettext("There are updates available for the following components:");
@@ -298,18 +331,10 @@ $(function() {
         self.onDataUpdaterReconnect = function() {
             if (self.waitingForRestart) {
                 self.waitingForRestart = false;
-
-                var options = {
-                    title: gettext("Restart successful!"),
-                    text: gettext("The server was restarted successfully. The page will now reload automatically."),
-                    type: "success",
-                    hide: false
-                };
-                self._showPopup(options);
                 self.updateInProgress = false;
-
-                var delay = 5 + Math.floor(Math.random() * 5) + 1;
-                setTimeout(function() {location.reload(true);}, delay * 1000);
+                if (!self.reloadOverlay.is(":visible")) {
+                    self.reloadOverlay.show();
+                }
             }
         };
 
@@ -362,7 +387,7 @@ $(function() {
                             }
                         });
                         self.waitingForRestart = false;
-                    }, 20000);
+                    }, 60000);
 
                     break;
                 }

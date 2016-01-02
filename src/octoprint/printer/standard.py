@@ -389,6 +389,7 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 		self._timeEstimationData = TimeEstimationHelper(rolling_window=rolling_window, threshold=threshold, countdown=countdown)
 
 		self._lastProgressReport = None
+		self._setProgressData(0, None, None, None)
 		self._setCurrentZ(None)
 		self._comm.startPrint()
 
@@ -644,6 +645,8 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 		if filename is not None:
 			if sd:
 				path_in_storage = filename
+				if path_in_storage.startswith("/"):
+					path_in_storage = path_in_storage[1:]
 				path_on_disk = None
 			else:
 				path_in_storage = self._fileManager.path_in_storage(FileDestinations.LOCAL, filename)
@@ -679,7 +682,7 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 			# Use a string for mtime because it could be float and the
 			# javascript needs to exact match
 			if not sd:
-				date = int(os.stat(path_on_disk).st_ctime)
+				date = int(os.stat(path_on_disk).st_mtime)
 
 			try:
 				fileData = self._fileManager.get_metadata(FileDestinations.SDCARD if sd else FileDestinations.LOCAL, path_on_disk)

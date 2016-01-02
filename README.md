@@ -10,6 +10,10 @@ Its website can be found at [octoprint.org](http://octoprint.org).
 
 The documentation is located at [docs.octoprint.org](http://docs.octoprint.org).
 
+The official plugin repository can be reached at [plugins.octoprint.org](http://plugins.octoprint.org).
+
+![Screenshot](http://i.imgur.com/dF3noFp.png)
+
 You are currently looking at the source code repository of OctoPrint. If you already installed it
 (e.g. by using the Raspberry Pi targeted distribution [OctoPi](https://github.com/guysoft/OctoPi)) and only
 want to find out how to use it, [the documentation](http://docs.octoprint.org/) and [the public wiki](https://github.com/foosel/OctoPrint/wiki)
@@ -36,15 +40,30 @@ For information about how to go about contributions of any kind, please see the 
 Installation
 ------------
 
-Installation instructions for installing from source for different operating systems can be found [on the wiki](https://github.com/foosel/OctoPrint/wiki#assorted-guides).
+Installation instructions for installing from source for different operating
+systems can be found [on the wiki](https://github.com/foosel/OctoPrint/wiki#assorted-guides).
 
 If you want to run OctoPrint on a Raspberry Pi you might want to take a look at [OctoPi](https://github.com/guysoft/OctoPi)
 which is a custom SD card image that includes OctoPrint plus dependencies.
 
+The generic steps that should basically be done regardless of operating system
+and runtime environment are the following (as *regular
+user*, please keep your hands *off* of the `sudo` command here!) - this assumes
+you already have Python 2.7, pip and virtualenv set up:
+
+1. Checkout OctoPrint: `git clone https://github.com/foosel/OctoPrint.git`
+2. Change into the OctoPrint folder: `cd OctoPrint`
+3. Create a user-owned virtual environment therein: `virtualenv --system-site-packages venv`
+4. Install OctoPrint *into that virtual environment*: `./venv/bin/python setup.py install`
+
+You may then start the OctoPrint server via `/path/to/OctoPrint/venv/bin/octoprint`, see [Usage](#usage)
+for details.
+
 After installation, please make sure you follow the first-run wizard and set up
 access control as necessary. If you want to not only be notified about new
 releases but also be able to automatically upgrade to them from within
-OctoPrint, take a look [at the documentation of the Software Update Plugin](https://github.com/foosel/OctoPrint/wiki/Plugin:-Software-Update#making-octoprint-updateable-on-existing-installations).
+OctoPrint, take a look [at the documentation of the Software Update Plugin](https://github.com/foosel/OctoPrint/wiki/Plugin:-Software-Update#making-octoprint-updateable-on-existing-installations)
+and at its settings.
 
 Dependencies
 ------------
@@ -115,3 +134,4 @@ Special Thanks
 
 The development of OctoPrint is sponsored and maintained by [BQ](http://www.bq.com/).
 Cross-browser testing services are kindly provided by [BrowserStack](http://www.browserstack.com/).
+Profiling is done with the help of [PyVmMonitor](http://www.pyvmmonitor.com).
